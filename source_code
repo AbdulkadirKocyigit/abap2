@@ -1,0 +1,199 @@
+REPORT zbk_egt_0011.
+
+START-OF-SELECTION .
+
+  TYPE-POOLS : truxs.
+
+" Internal table yapısı tanımı
+  TYPES: BEGIN OF gty_data,
+           pers_id    TYPE char8,
+           pers_name  TYPE sstring,
+           tab_date   TYPE dats,
+           start_time TYPE tims,
+         END OF gty_data.
+
+" Programda kullanılacak veriler
+  DATA: gt_data      TYPE TABLE OF gty_data,
+        gs_data      TYPE gty_data,
+        gt_raw_excel TYPE TABLE OF alsmex_tabline,
+        gs_raw_excel TYPE alsmex_tabline.
+
+
+  TABLES: zakoc_tabdata. "Verilerin yazılacağı z-tablo
+
+  SELECTION-SCREEN BEGIN OF BLOCK block-1 WITH FRAME TITLE text-001.
+
+  PARAMETERS : pa_file LIKE rlgrap-filename DEFAULT 'C:\Users\akocyigit\Downloads\pers_id - Copy - 2'.
+  " or CFFILE-FILENAME
+
+  SELECTION-SCREEN END OF BLOCK block-1.
+
+" Dosya seçme yardımı (F4)
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR pa_file.
+  PERFORM u_selectfile USING pa_file.
+
+START-OF-SELECTION.
+
+  PERFORM u_uploadexceldata.          " Excel'den oku
+  PERFORM u_displayinternaltabledata. " Ekranda göster
+  PERFORM u_savetotable.              " Veritabanına yaz
+
+END-OF-SELECTION.
+
+*&---------------------------------------------------------------------*
+*& Form U_SELECTFILE
+*&---------------------------------------------------------------------*
+* Form: Dosya seçimi (Excel dosyasını seçmek için F4 yardımı)
+FORM u_selectfile USING p_pa_file TYPE localfile.
+
+  DATA : lv_subrc  LIKE sy-subrc,
+         lt_it_tab TYPE filetable.
+
+  " Display File Open Dialog control/screen
+  CALL METHOD cl_gui_frontend_services=>file_open_dialog
+    EXPORTING
+      window_title     = 'Select Source Excel File'
+      default_filename = '*.xls'
+      multiselection   = ' '
+    CHANGING
+      file_table       = lt_it_tab
+      rc               = lv_subrc.
+
+  " Seçilen dosya yolunu parametreye ata
+  LOOP AT lt_it_tab INTO p_pa_file.
+  ENDLOOP.
+
+ENDFORM. " U_SELECTFILE
+
+*&---------------------------------------------------------------------*
+*& Form U_UPLOADEXCELDATA
+*&---------------------------------------------------------------------*
+* Form: Excel'den veriyi içeri aktarma
+FORM u_uploadexceldata .
+
+  DATA: lv_row   TYPE i,
+        lv_col   TYPE i,
+        lv_index TYPE i,
+        lv_value TYPE string.
+
+  " Excel'den verileri satır-sütun bazlı olarak oku
+  CALL FUNCTION 'ALSM_EXCEL_TO_INTERNAL_TABLE'
+    EXPORTING
+      filename                = pa_file
+      i_begin_col             = 1
+      i_begin_row             = 2
+      i_end_col               = 4
+      i_end_row               = 9999
+    TABLES
+      intern                  = gt_raw_excel
+    EXCEPTIONS
+      inconsistent_parameters = 1
+      upload_ole              = 2
+      OTHERS                  = 3.
+
+  " Okuma sırasında hata olursa kullanıcıya mesaj ver
+  IF sy-subrc <> 0.
+    WRITE: / 'Excel okuma hatası!'.
+    EXIT.
+  ENDIF.
+
+  " Satır bazında verileri oku ve kendi yapımıza aktar
+  CLEAR gs_data.
+  CLEAR lv_row.
+
+  LOOP AT gt_raw_excel INTO gs_raw_excel.
+    " İlk satırın numarasını belirle
+    IF lv_row IS INITIAL.
+      lv_row = gs_raw_excel-row.
+    ENDIF.
+
+    " Satır değiştiyse, önceki veriyi tabloya ekle
+    IF gs_raw_excel-row <> lv_row.
+      APPEND gs_data TO gt_data.
+      CLEAR gs_data.
+      lv_row = gs_raw_excel-row.
+    ENDIF.
+
+    " Hangi sütun olduğuna göre veriyi alanlara ata
+    CASE gs_raw_excel-col.
+      WHEN 1.
+        gs_data-pers_id = gs_raw_excel-value.
+      WHEN 2.
+        gs_data-pers_name = gs_raw_excel-value.
+      WHEN 3.
+        gs_data-tab_date = gs_raw_excel-value. " YYYYMMDD formatında olmalı
+      WHEN 4.
+        " Saat verisi Excel'den 'HH:MM:SS' formatında geliyor, ':' karakterlerini temizle
+        DATA(lv_raw_time) = gs_raw_excel-value.
+        IF lv_raw_time IS NOT INITIAL.
+          REPLACE ALL OCCURRENCES OF ':' IN lv_raw_time WITH ''. " '13:45:30' -> '134530'
+          gs_data-start_time = lv_raw_time.                      " Tip T alanına uygun olarak ata
+        ELSE.
+          gs_data-start_time = '000000'.                         " Boşsa '00:00:00' saat olarak ata
+        ENDIF.
+    ENDCASE.
+  ENDLOOP.
+
+  " Son satırı da tabloya ekle (döngü dışında kaldığı için)
+  IF gs_data-pers_id IS NOT INITIAL.
+    APPEND gs_data TO gt_data.
+  ENDIF.
+
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form U_DISPLAYINTERNALTABLEDATA
+*&---------------------------------------------------------------------*
+FORM u_displayinternaltabledata .
+
+  WRITE: / 'PERS_ID', 15 'PERS_NAME', 45 'TAB_DATE', 60 'START_TIME'.
+
+  LOOP AT gt_data INTO gs_data.
+    WRITE: / gs_data-pers_id,
+             15 gs_data-pers_name,
+             45 gs_data-tab_date,
+             60 gs_data-start_time.
+  ENDLOOP.
+
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Form U_SAVETOTABLE
+*&---------------------------------------------------------------------*
+FORM u_savetotable.
+
+  LOOP AT gt_data INTO gs_data.
+
+    CLEAR zakoc_tabdata.
+    zakoc_tabdata-mandt       = sy-mandt.
+    zakoc_tabdata-pers_id     = gs_data-pers_id.
+    zakoc_tabdata-pers_name   = gs_data-pers_name.
+    zakoc_tabdata-tab_date    = gs_data-tab_date.
+    zakoc_tabdata-start_time  = gs_data-start_time.
+
+    " ---> Ek: Kayıt kontrolü
+    SELECT SINGLE * FROM zakoc_tabdata
+      WHERE pers_id    = zakoc_tabdata-pers_id
+        AND tab_date   = zakoc_tabdata-tab_date
+        AND start_time = zakoc_tabdata-start_time.
+
+*    IF sy-subrc <> 0.
+*      " Kayıt yoksa ekle
+*      INSERT zakoc_tabdata.
+*      IF sy-subrc = 0.
+*        WRITE: / 'Kayıt eklendi:', gs_data-pers_id.
+*      ELSE.
+*        WRITE: / 'Kayıt EKLENEMEDİ:', gs_data-pers_id,
+*                 'SY-SUBRC =', sy-subrc.
+*      ENDIF.
+*    ELSE.
+*      " Aynı anahtarla kayıt varsa hiçbir şey yapma
+*      WRITE: / 'ZATEN VAR:', gs_data-pers_id.
+*    ENDIF.
+
+  ENDLOOP.
+
+  COMMIT WORK.
+
+
+ENDFORM.
